@@ -1,0 +1,24 @@
+{
+  "name": "vue-s3-image-viewer",
+  "version": "1.0.0",
+  "description": "A Vue website that allows users to scrub through images in an S3 bucket",
+  "scripts": {
+    "serve": "concurrently \"vue-cli-service serve --host 0.0.0.0\" \"python api_server/server.py\"",
+    "build": "vue-cli-service build",
+    "lint": "vue-cli-service lint",
+    "serve:static": "http-server ./dist",
+    "start": "npm run build && concurrently \"npm run serve:static\" \"python api_server/server.py\""
+  },
+  "dependencies": {
+    "axios": "^0.21.1",
+    "vue": "^2.6.14",
+    "vue-router": "^3.5.2"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions"
+  ]
+}
