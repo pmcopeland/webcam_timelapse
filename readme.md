@@ -125,5 +125,4 @@ journalctl -u webcam_timelapse.service
 ```
 Use `-f` to get live trailing logs. 
 
-- To view the latest image look at ``
-
+- To view the latest image look at `images/last.jpg`, if you open the file in vs code (using vs code remote ssh or tunnels if running on headless machine) to watch the image update every time a photo is taken.
