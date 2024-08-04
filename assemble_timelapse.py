@@ -2,23 +2,22 @@ import boto3
 import cv2
 import numpy as np
 import os
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Load environment variables
-BUCKET_NAME = os.getenv('WEBCAMTIMELAPSE_BUCKET_NAME')
-if not BUCKET_NAME:
-    raise ValueError("No WEBCAMTIMELAPSE_BUCKET_NAME environment variable set")
-
+# AWS S3 configuration
+BUCKET_NAME = 'pmc-timelapses'
 LOCAL_IMAGE_DIR = './images'
 TIMELAPSE_VIDEO_PATH = './timelapse.mp4'
-FRAME_RATE = 15  # FPS
-OUTPUT_VIDEO_DURATION = 200 # Seconds
+FRAME_RATE = 30 # FPS
+OUTPUT_VIDEO_DURATION = 180 # Seconds
 
 def list_images_in_s3(bucket_name):
     s3 = boto3.client('s3')
     images = []
     continuation_token = None
 
+    # Only retrieve the latest (roughtly) frame_rate*duration number of images
     while True:
         if continuation_token:
             response = s3.list_objects_v2(Bucket=bucket_name, ContinuationToken=continuation_token)
@@ -34,15 +33,31 @@ def list_images_in_s3(bucket_name):
         else:
             break
 
+    # Sort the images by last modified time in descending order
+    images.sort(key=lambda x: x[1], reverse=True)
+
+    # Return only the latest frame_rate*duration number of images
+    images = images[:FRAME_RATE*OUTPUT_VIDEO_DURATION]
+
     return images
 
 def download_image(s3, bucket_name, image_key, local_dir):
     local_path = os.path.join(local_dir, os.path.basename(image_key))
-    if not os.path.exists(local_path):
+    if not image_exists_localy(image_key, local_dir):
         s3.download_file(bucket_name, image_key, local_path)
         print(f"Downloaded {image_key} to {local_path}")
     else:
         print(f"Skipped {image_key}, already exists at {local_path}")
+
+def image_exists_localy(image_key, local_dir):
+    local_path = os.path.join(local_dir, os.path.basename(image_key))
+    return os.path.exists(local_path)
+
+def filter_already_downloaded_images(images, local_dir):
+    new_images = [(image_key, last_modified) for image_key, last_modified in images if not image_exists_localy(image_key, local_dir)]
+    old_images = [(image_key, last_modified) for image_key, last_modified in images if image_exists_localy(image_key, local_dir)]
+    return new_images, old_images
+
 
 def download_images(bucket_name, images, local_dir):
     s3 = boto3.client('s3')
@@ -82,22 +97,43 @@ def create_timelapse_video(local_dir, images, video_path, frame_rate):
     os.system(f'ffmpeg -i {video_path} -vcodec libx264 -crf 23 -preset fast {optimized_video_path} -y')
     print(f"Timelapse video created and optimized for web streaming at {optimized_video_path}")
 
+    # Delete the original video
+    os.remove(video_path)
+    print(f"Original video deleted: {video_path}")
+
 def main():
     print("Listing images in S3 bucket...")
     images = list_images_in_s3(BUCKET_NAME)
-    if not images:
-        print("No images found in the S3 bucket.")
-        return
-
-    print("Downloading images from S3...")
-    download_images(BUCKET_NAME, images, LOCAL_IMAGE_DIR)
 
     # trim images
     # get last (output_video_length*frame_rate) images
     images = images[-OUTPUT_VIDEO_DURATION*FRAME_RATE:]
 
-    print("Creating timelapse video...")
-    create_timelapse_video(LOCAL_IMAGE_DIR, images, TIMELAPSE_VIDEO_PATH, FRAME_RATE)
+    images, filteredOutImages  = filter_already_downloaded_images(images, LOCAL_IMAGE_DIR)
+
+    if images:
+        start_time = images[-1][1].strftime('%Y-%m-%d %H:%M:%S')
+        end_time = images[-0][1].strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        print(f"No images available in the S3 bucket {BUCKET_NAME}.")
+
+
+    inputQuestion = f"""
+Filtered out \033[41m{len(filteredOutImages)}\033[0m images that were already downloaded.
+\033[42m{len(images)}\033[0m images to download. \n
+\033[44m{start_time}\033[0m to \033[44m{end_time}\033[0m \n
+Do you want to continue? (y/n):"""
+
+    user_input = input(inputQuestion)
+
+    if user_input.lower() == "y":
+        print("Downloading images from S3...")
+        download_images(BUCKET_NAME, images, LOCAL_IMAGE_DIR)
+
+        print("Creating timelapse video...")
+        create_timelapse_video(LOCAL_IMAGE_DIR, images, TIMELAPSE_VIDEO_PATH, FRAME_RATE)
+    else:
+        print("Timelapse creation cancelled.")
 
 if __name__ == "__main__":
     main()
