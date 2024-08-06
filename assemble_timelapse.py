@@ -5,12 +5,15 @@ import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# AWS S3 configuration
-BUCKET_NAME = 'pmc-timelapses'
+# Load environment variables
+BUCKET_NAME = os.getenv('WEBCAMTIMELAPSE_BUCKET_NAME')
+if not BUCKET_NAME:
+    raise ValueError("No BUCKET_NAME environment variable set")
+    
 LOCAL_IMAGE_DIR = './images'
 TIMELAPSE_VIDEO_PATH = './timelapse.mp4'
 FRAME_RATE = 30 # FPS
-OUTPUT_VIDEO_DURATION = 180 # Seconds
+OUTPUT_VIDEO_DURATION = 200 # Seconds
 
 def list_images_in_s3(bucket_name):
     s3 = boto3.client('s3')
