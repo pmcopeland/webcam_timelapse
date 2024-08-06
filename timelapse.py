@@ -177,8 +177,6 @@ def calculate_brightness(current_time):
 
     return brightness
 
-import cv2
-
 def add_timestamp_to_frame(frame, timestamp, position='bottom-left'):
 
     font = cv2.FONT_HERSHEY_SIMPLEX
