@@ -1,8 +1,20 @@
 import yaml
 import time
+import math
+
+
+
+def load_settings():
+    global MODE
+
+    with open('settings.yaml', 'r') as f:
+        config = yaml.safe_load(f)
+
+    settings = config['fun_stuff']['time_dilation']
+    
+    MODE = settings['mode']
 
 # Function to get the original FREQUENCY value from the YAML file
-
 def get_original_frequency(file_path):
     # Read the YAML file
     with open(file_path, 'r') as file:
@@ -16,7 +28,6 @@ def get_original_frequency(file_path):
         return None
 
 # Function to update the FREQUENCY value in the YAML file
-
 def update_frequency(file_path, new_frequency):
     new_frequency = round(new_frequency)
 
@@ -37,7 +48,42 @@ def update_frequency(file_path, new_frequency):
     
     print(f"FREQUENCY updated to {new_frequency} in {file_path}")
 
+def calculate_new_frequency(current_value, min_value, max_value, step, mode, angle=None):
+    """
+    Calculate the new frequency based on the specified mode.
+    
+    Parameters:
+    - current_value: The current frequency value.
+    - min_value: The minimum frequency limit.
+    - max_value: The maximum frequency limit.
+    - step: The step size for incrementing or decrementing.
+    - mode: The mode of transition ('linear' or 'sine').
+    - angle: The current angle for sine wave calculation (only used in 'sine' mode).
+    
+    Returns:
+    - new_value: The updated frequency value.
+    - new_angle: The updated angle (only relevant for 'sine' mode).
+    """
+    if mode == 'linear':
+        direction = 1 if current_value < max_value else -1
+        new_value = current_value + direction * step
+        if new_value >= max_value or new_value <= min_value:
+            direction *= -1
+            new_value = current_value + direction * step
+        return new_value, None
+    
+    elif mode == 'sine':
+        new_value = (max_value - min_value) / 2 * (math.sin(angle) + 1) + min_value
+        new_angle = angle + step
+        return new_value, new_angle
+    
+    else:
+        raise ValueError("Invalid mode. Use 'linear' or 'sine'.")
+
 def main(file_path, min_freq, max_freq, step):
+    load_settings()
+
+
     # Read the YAML file to get the current frequency
     with open(file_path, 'r') as file:
         data = yaml.safe_load(file)
@@ -48,35 +94,19 @@ def main(file_path, min_freq, max_freq, step):
         print("FREQUENCY key not found under settings in the YAML file.")
         return
     
-    direction = -1  # 1 for increment, -1 for decrement
+    angle = 0  # Initial angle for the sine wave
 
     while True:
-        # Sleep for the current frequency
-        print(f"Sleeping for {current_frequency} seconds...")
-        time.sleep(current_frequency)
-        
-        # Update the frequency
-        current_frequency += direction * step
 
-        #
-        
-        # Reverse direction if limits are reached
-        if current_frequency >= max_freq or current_frequency <= min_freq:
-            direction *= -1
+        # Calculate the new frequency
+        current_frequency, angle = calculate_new_frequency(current_frequency, min_freq, max_freq, step, MODE, angle)
+
+        print(f"Mode: {MODE}, Frequency: {current_frequency}, Angle: {angle}")
         
         # Update the frequency in the YAML file
         update_frequency(file_path, current_frequency)
+        
+        time.sleep(current_frequency)
 
-
-if __name__ == '__main__':
-    original_frequency = get_original_frequency('settings.yaml')
-    print(f"Original FREQUENCY: {original_frequency}")
-    try:
-        main('settings.yaml', min_freq=5, max_freq=60, step=0.5)
-    except Exception as e:
-         # Reset the frequency to its original value
-        update_frequency('settings.yaml', original_frequency)
-        print(f"An error occurred: {e}")
-    finally:
-        # Reset the frequency to its original value
-        update_frequency('settings.yaml', original_frequency)
+if __name__ == "__main__":
+    main('settings.yaml', min_freq=5, max_freq=120, step=0.1)
