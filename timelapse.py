@@ -8,9 +8,13 @@ import yaml
 import pytz
 from tabulate import tabulate
 import traceback
+import sqlite3
 
 # Define the images directory
 images_dir = './images'
+
+# SQL db
+conn = sqlite3.connect('timelapse.db')
 
 # Define the Central Time Zone
 central = pytz.timezone('US/Central')
@@ -27,7 +31,7 @@ def load_settings():
     global MAX_RUNTIME_HOURS, IMAGE_RETENTION_HOURS, FREQUENCY
     global SUNRISE_TIME, SUNSET_TIME, NIGHT_BRIGHTNESS, DAY_BRIGHTNESS
     global SHOW_CAMERA_SETTINGS, SHOW_TIMESTAMP, SAVE_LOCAL_LATEST_IMG, SAVE_S3
-    global SHOW_TIMING, ENABLED
+    global SHOW_TIMING, ENABLED, SAVE_SQLITE
 
     with open('settings.yaml', 'r') as f:
         config = yaml.safe_load(f)
@@ -49,6 +53,7 @@ def load_settings():
     SHOW_TIMING = debug['SHOW_TIMING']
     SAVE_LOCAL_LATEST_IMG = debug['SAVE_LOCAL_LATEST_IMG']
     SAVE_S3 = debug['SAVE_S3']
+    SAVE_SQLITE = debug['SAVE_SQLITE']
 
 def initialize_camera():
     load_settings()
@@ -63,6 +68,68 @@ def initialize_camera():
 
     print("Camera initialized successfully.")
     return cap
+
+def initialize_database(db_path='timelapse.db', conn=None):
+    global SESSION_ID
+    if conn is None:
+        conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS frames (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME,
+            file_name TEXT,
+            brightness INTEGER,
+            contrast INTEGER,
+            saturation INTEGER,
+            gain INTEGER,
+            white_balance_temperature INTEGER,
+            frequency INTEGER,
+            timelapse_session TEXT,
+            FOREIGN KEY (timelapse_session) REFERENCES timelapse_sessions(session_id)
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS timelapse_sessions (
+            session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            start_time DATETIME,
+            end_time DATETIME
+        )
+    ''')
+
+    cursor.execute('''
+                   INSERT INTO timelapse_sessions (start_time)
+                   VALUES (?)
+                   ''', (datetime.now(),))
+    
+    SESSION_ID = cursor.lastrowid
+
+    conn.commit()
+
+def insert_frame_database(timestamp, brightness, contrast, saturation, gain, white_balance_temperature, file_name, frequency, db_path='timelapse.db'):
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO frames (timestamp, brightness, contrast, saturation, gain, white_balance_temperature, file_name, frequency, timelapse_session)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (timestamp, brightness, contrast, saturation, gain, white_balance_temperature, file_name, frequency, SESSION_ID))
+    conn.commit()
+    conn.close()
+
+def close_session_database(db_path='timelapse.db', conn=None):
+    if conn is None:
+        conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE timelapse_sessions
+        SET end_time = ?
+        WHERE session_id = ?
+    ''', (datetime.now(), SESSION_ID))
+    conn.commit()
+    conn.close()
+
 
 def capture_frame(cap):
 
@@ -230,8 +297,14 @@ def format_times_table(times_list, loop_duration, FREQUENCY, deviation, adjusted
     times_list.append(["Deviation from frequency", deviation])
     times_list.append(["Adjusted sleep duration", adjusted_sleep_duration])
 
-    # Return the formatted table as a string
-    return tabulate(times_list, headers=["Task", "Duration (s)"], tablefmt="grid")
+    output = ""
+
+    # build multiline string
+    for k, v in times_list:
+        if v is not None:
+            output += f"{k}: {round(v, 2)}\n"
+
+    return output
 
 def save_frame(frame, images_dir):
 
@@ -353,100 +426,112 @@ def main():
     cap = initialize_camera()
     start_time = datetime.now(timezone.utc)
 
+    if SAVE_SQLITE:
+        initialize_database(conn=conn)
+
+
     try:
         while (datetime.now(timezone.utc) - start_time) < timedelta(hours=MAX_RUNTIME_HOURS):
             load_settings_start = time_module.time()
             load_settings()
             load_settings_end = time_module.time()
             
-            if ENABLED:
-                loop_start_time = time_module.time()
-                current_time = datetime.now(timezone.utc)
-                
-                calculate_brightness_start = time_module.time()
-                brightness = calculate_brightness(datetime.now())
-                calculate_brightness_end = time_module.time()
-                
-                set_brightness_start = time_module.time()
-                cap.set(cv2.CAP_PROP_BRIGHTNESS, brightness)
-                set_brightness_end = time_module.time()
-                
-                capture_frame_start = time_module.time()
-                frame = capture_frame(cap)
-                capture_frame_end = time_module.time()
 
-                if SHOW_TIMESTAMP:
-                    add_timestamp_start = time_module.time()
-                    image_timestamp = datetime.now().strftime('%m/%d/%Y %H:%M')
-                    frame = add_timestamp_to_frame(frame, image_timestamp)
-                    add_timestamp_end = time_module.time()
+            loop_start_time = time_module.time()
+            current_time = datetime.now(timezone.utc)
+            
+            calculate_brightness_start = time_module.time()
+            brightness = calculate_brightness(datetime.now())
+            calculate_brightness_end = time_module.time()
+            
+            set_brightness_start = time_module.time()
+            cap.set(cv2.CAP_PROP_BRIGHTNESS, brightness)
+            set_brightness_end = time_module.time()
+            
+            capture_frame_start = time_module.time()
+            frame = capture_frame(cap)
+            capture_frame_end = time_module.time()
 
-                if SHOW_TIMING:
-                    add_timing_start = time_module.time()
-                    frame = add_previous_timing(frame, previous_times)
-                    add_timing_end = time_module.time()
-                
-                if SHOW_CAMERA_SETTINGS:
-                    add_camera_settings_start = time_module.time()
-                    frame = add_camera_settings_to_frame(frame, cap)
-                    add_camera_settings_end = time_module.time()
+            if SHOW_TIMESTAMP:
+                add_timestamp_start = time_module.time()
+                image_timestamp = datetime.now().strftime('%m/%d/%Y %H:%M')
+                frame = add_timestamp_to_frame(frame, image_timestamp)
+                add_timestamp_end = time_module.time()
 
-                if SAVE_LOCAL_LATEST_IMG:
-                    save_frame_start = time_module.time()
-                    image_path = save_frame(frame, images_dir)
-                    save_frame_end = time_module.time()
+            if SHOW_TIMING:
+                add_timing_start = time_module.time()
+                frame = add_previous_timing(frame, previous_times)
+                add_timing_end = time_module.time()
+            
+            if SHOW_CAMERA_SETTINGS:
+                add_camera_settings_start = time_module.time()
+                frame = add_camera_settings_to_frame(frame, cap)
+                add_camera_settings_end = time_module.time()
 
-                if SAVE_S3:
-                    upload_to_s3_start = time_module.time()
-                    file_timestamp = datetime.now(timezone.utc).strftime('%Y %m %d_%H %M %S')
-                    upload_to_s3(image_path, file_timestamp)
-                    upload_to_s3_end = time_module.time()
+            if SAVE_LOCAL_LATEST_IMG:
+                save_frame_start = time_module.time()
+                image_path = save_frame(frame, images_dir)
+                save_frame_end = time_module.time()
+
+            if SAVE_S3:
+                upload_to_s3_start = time_module.time()
+                file_timestamp = datetime.now(timezone.utc).strftime('%Y %m %d_%H %M %S')
+                upload_to_s3(image_path, file_timestamp)
+                upload_to_s3_end = time_module.time()
+
+            if SAVE_SQLITE:
+                save_sqlite_start = time_module.time()
+                insert_frame_database(datetime.now(), brightness, cap.get(cv2.CAP_PROP_CONTRAST), cap.get(cv2.CAP_PROP_SATURATION), cap.get(cv2.CAP_PROP_GAIN), cap.get(cv2.CAP_PROP_WB_TEMPERATURE), file_timestamp, FREQUENCY)
+                save_sqlite_end = time_module.time()
 
 
-                if (current_time - start_time).seconds % 3600 < FREQUENCY:
-                    delete_old_images_start = time_module.time()
-                    delete_old_images_from_s3()
-                    delete_old_images_end = time_module.time()
+            if (current_time - start_time).seconds % 3600 < FREQUENCY:
+                delete_old_images_start = time_module.time()
+                delete_old_images_from_s3()
+                delete_old_images_end = time_module.time()
 
-                loop_end_time = time_module.time()
-                loop_duration = loop_end_time - loop_start_time
-                deviation = loop_duration - FREQUENCY
+            loop_end_time = time_module.time()
+            loop_duration = loop_end_time - loop_start_time
+            deviation = loop_duration - FREQUENCY
 
-                adjusted_sleep_duration = max(0, FREQUENCY - loop_duration)
+            adjusted_sleep_duration = max(0, FREQUENCY - loop_duration)
 
-                times = {
-                    "load_settings": (load_settings_start, load_settings_end),
-                    "calculate_brightness": (calculate_brightness_start, calculate_brightness_end),
-                    "set_brightness": (set_brightness_start, set_brightness_end),
-                    "capture_frame": (capture_frame_start, capture_frame_end),
-                    "add_timestamp": (add_timestamp_start, add_timestamp_end) if SHOW_TIMESTAMP else (None, None),
-                    'add_prev_timing': (add_timing_start, add_timing_end) if SHOW_TIMING else (None, None),
-                    "add_camera_settings": (add_camera_settings_start, add_camera_settings_end) if SHOW_CAMERA_SETTINGS else (None, None),
-                    "save_frame": (save_frame_start, save_frame_end) if SAVE_LOCAL_LATEST_IMG else (None, None),
-                    "upload_to_s3": (upload_to_s3_start, upload_to_s3_end) if SAVE_S3 else (None, None),
-                    "delete_old_images": (delete_old_images_start, delete_old_images_end) if (current_time - start_time).seconds % 3600 < FREQUENCY else (None, None),
-                }
-                times_list = calculate_times(times)
-                formatted_table = format_times_table(times_list, loop_duration, FREQUENCY, deviation, adjusted_sleep_duration)
-                print("████████████████████████████████████████████████████████████████████████")
-                print(f" [{datetime.now(timezone.utc).isoformat()}] Loop completed.")
-                print(formatted_table)
-                
-                previous_times = times_list
-                
-                time_module.sleep(adjusted_sleep_duration)
+            times = {
+                "load_settings": (load_settings_start, load_settings_end),
+                "calculate_brightness": (calculate_brightness_start, calculate_brightness_end),
+                "set_brightness": (set_brightness_start, set_brightness_end),
+                "capture_frame": (capture_frame_start, capture_frame_end),
+                "add_timestamp": (add_timestamp_start, add_timestamp_end) if SHOW_TIMESTAMP else (None, None),
+                'add_prev_timing': (add_timing_start, add_timing_end) if SHOW_TIMING else (None, None),
+                "add_camera_settings": (add_camera_settings_start, add_camera_settings_end) if SHOW_CAMERA_SETTINGS else (None, None),
+                "save_frame": (save_frame_start, save_frame_end) if SAVE_LOCAL_LATEST_IMG else (None, None),
+                "upload_to_s3": (upload_to_s3_start, upload_to_s3_end) if SAVE_S3 else (None, None),
+                "save_sqlite": (save_sqlite_start, save_sqlite_end) if SAVE_SQLITE else (None, None),
+                "delete_old_images": (delete_old_images_start, delete_old_images_end) if (current_time - start_time).seconds % 3600 < FREQUENCY else (None, None),
+            }
+            times_list = calculate_times(times)
+            formatted_table = format_times_table(times_list, loop_duration, FREQUENCY, deviation, adjusted_sleep_duration)
+            print("████████████████████████████████████████████████████████████████████████")
+            print(f" [{datetime.now(timezone.utc).isoformat()}] Loop completed.")
+            print(formatted_table)
+            
+            previous_times = times_list
+            
+            time_module.sleep(adjusted_sleep_duration)
 
-            else:
-                print("⚠ ⚠ ⚠ CAMERA DISABLED ⚠ ⚠ ⚠")
-                time_module.sleep(1)
+        else:
+            print("⚠ ⚠ ⚠ CAMERA DISABLED ⚠ ⚠ ⚠")
+            time_module.sleep(1)
 
             
 
     except Exception as e:
+        close_session_database()
         print(f"[{datetime.now(timezone.utc).isoformat()}] An error occurred: {e}")
         traceback.print_exc()
     finally:
         cap.release()
+        close_session_database()
         print(f"[{datetime.now(timezone.utc).isoformat()}] Camera released after main process.")
 
 if __name__ == "__main__":
